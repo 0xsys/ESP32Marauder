@@ -347,7 +347,6 @@ class MenuFunctions
     #endif
     void drawGraph(int16_t *values);
     void drawGraphSmall(uint8_t *values);
-    void renderGraphUI(uint8_t scan_mode = 0);
     void addNodes(Menu* menu, const char* name, uint8_t color, int place, std::function<void()> callable, bool selected = false);
     void buildLazyMenu(Menu* menu);
     void buildWiFiGeneralMenu();
@@ -410,6 +409,10 @@ class MenuFunctions
     #endif
 
   public:
+    // Draw the analyzer chart UI (axis + labels). Public so the `analyzer` CLI
+    // command can render the same chart the on-device menu does.
+    void renderGraphUI(uint8_t scan_mode = 0);
+
     Menu* current_menu;
     Menu clearSSIDsMenu;
     Menu clearAPsMenu;

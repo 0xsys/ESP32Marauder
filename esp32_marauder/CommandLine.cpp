@@ -1,4 +1,5 @@
 #include "CommandLine.h"
+#include "JsonSerial.h"
 
 // GCOVR_EXCL_START -- serial protocol output depends on Arduino Serial.
 namespace {
@@ -83,7 +84,11 @@ void CommandLine::main(uint32_t currentTime) {
 
   this->runCommand(input);
 
-  if (input != "")
+  // Re-print the interactive prompt for a human watching a serial monitor, but
+  // stay silent while a JSON host is driving the link. The prompt has no
+  // trailing newline, so it would otherwise glue onto the next "@J " machine
+  // line ("> @J {...}") and break the host's line framing.
+  if (input != "" && !JsonSerial::jsonModeEnabled())
     Serial.print("> ");
 }
 
@@ -263,14 +268,25 @@ void CommandLine::startScanFromCLI(int scan_mode, uint16_t color, const char* sc
 void CommandLine::runCommand(String input) {
   if (input == "") return;
 
-  if(wifi_scan_obj.scanning() && wifi_scan_obj.currentScanMode == WIFI_SCAN_GPS_NMEA){
-    if(input != STOPSCAN_CMD) return;    
+  LinkedList<String> cmd_args = this->parseCommand(input, " ");
+
+  bool nmea_passthrough = wifi_scan_obj.scanning() &&
+                          wifi_scan_obj.currentScanMode == WIFI_SCAN_GPS_NMEA;
+
+  // JSON (machine readable) commands run first so a host can poll status/data
+  // mid-scan. Exception: during a GPS-NMEA passthrough we only allow them when
+  // JSON mode is on, so a plain NMEA host reading the port keeps a pure sentence
+  // stream (no interleaved "@J" lines). They skip the "#<echo>" line.
+  if ((!nmea_passthrough || JsonSerial::jsonModeEnabled()) &&
+      JsonSerial::handle(&cmd_args))
+    return;
+
+  if (nmea_passthrough) {
+    if (input != STOPSCAN_CMD) return;
   }
   else
     Serial.println("#" + input);
 
-  LinkedList<String> cmd_args = this->parseCommand(input, " ");
-  
   //// Admin commands
   // Help
   if (cmd_args.get(0) == HELP_CMD) {
@@ -306,6 +322,7 @@ void CommandLine::runCommand(String input) {
     Serial.println(HELP_ARP_SCAN_CMD);
     Serial.println(HELP_PORT_SCAN_CMD);
     Serial.println(HELP_SIGSTREN_CMD);
+    Serial.println(HELP_ANALYZER_CMD);
     Serial.println(HELP_SCAN_ALL_CMD);
     //Serial.println(HELP_SCANSTA_CMD);
     Serial.println(HELP_SNIFF_RAW_CMD);
@@ -884,6 +901,28 @@ void CommandLine::runCommand(String input) {
         }
       }
       else Serial.println(HELP_GEOFENCE_CMD);
+    }
+    // Analyzers (screen-free: streams @J asample / @J chan to a JSON host)
+    else if (cmd_args.get(0) == ANALYZER_CMD) {
+      int t = this->argSearch(&cmd_args, "-t");
+      String type = (t != -1 && this->checkValueExists(&cmd_args, t)) ? this->toLowerCase(cmd_args.get(t + 1)) : "wifi";
+      uint8_t mode = WIFI_SCAN_CHAN_ANALYZER;
+      const char* name = " Channel Analyzer";
+      if (type == "chan" || type == "activity" || type == "summary") {
+        mode = WIFI_SCAN_CHAN_ACT; name = " Channel Activity";
+      }
+      #ifdef HAS_BT
+      else if (type == "bt") { mode = BT_SCAN_ANALYZER; name = " BT Analyzer"; }
+      #endif
+      Serial.print(F("Starting"));
+      Serial.print(name);
+      Serial.print(F(". Stop with "));
+      Serial.println(STOPSCAN_CMD);
+      #ifdef HAS_SCREEN
+        // Match the on-device menu path so the chart has its axis + labels.
+        menu_function_obj.renderGraphUI(mode);
+      #endif
+      wifi_scan_obj.StartScan(mode, TFT_CYAN);
     }
     // Wardrive
     else if (cmd_args.get(0) == WARDRIVE_CMD) {
