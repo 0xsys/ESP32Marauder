@@ -74,6 +74,12 @@
   //   2 -> length-prefixed binary capture streaming ("capstream"), jsonbaud, {"t":"drop"}
   #define MARAUDER_JSON_PROTO 2
 
+  // NimBLE TX power for BLE spam/advertising, in dBm. +9 dBm (ESP_PWR_LVL_P9) is
+  // the maximum the classic ESP32 radio supports; asking for more (the old
+  // hard-coded 20) makes NimBLE 2.x's setPower() fail and print
+  // "Failed to set NimBLE output power" on every spam iteration.
+  #define BLE_TX_POWER_DBM 9
+
   #define GRAPH_REFRESH   100
 
   #define TRACK_EVICT_SEC 90 // Seconds before marking tracked MAC as tombstone

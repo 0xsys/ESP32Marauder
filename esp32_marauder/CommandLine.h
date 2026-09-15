@@ -163,7 +163,7 @@ const char PROGMEM HELP_RECON_CMD[] = "recon wifi|ble|status|stop";
 const char PROGMEM HELP_NMEA_CMD[] = "nmea";
 
 // WiFi sniff/scan
-const char PROGMEM HELP_EVIL_PORTAL_CMD[] = "evilportal [-c start [-w html.html]/sethtml <html.html>]";
+const char PROGMEM HELP_EVIL_PORTAL_CMD[] = "evilportal [-c start [-w html.html]/sethtml <html.html>/sethtmlstr <len>/setap <n>]";
 const char PROGMEM HELP_KARMA_CMD[] = "karma -p <index>";
 const char PROGMEM HELP_PACKET_COUNT_CMD[] = "packetcount";
 const char PROGMEM HELP_SIGSTREN_CMD[] = "foxhunt -w <ap>/-s <ap> <station>/-b <ble>/-t <findmy>/-f <flipper>/-p <pineapple>/-m <multissid>";
