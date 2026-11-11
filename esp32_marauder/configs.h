@@ -296,8 +296,8 @@
     #define USE_SD
     #define HAS_TEMP_SENSOR
     #define HAS_GPS
-    #define HAS_NIMBLE_2
-    #define HAS_IDF_3
+    //#define HAS_NIMBLE_2  // core 2.0.11 for deauth/BLE (see ESP32_LDDB note)
+    //#define HAS_IDF_3
     //#define HAS_C5_SD
     #define HAS_SIMPLEX_DISPLAY
     #define HAS_DIRECT_UPLOAD
@@ -318,8 +318,8 @@
     #define USE_SD
     #define HAS_TEMP_SENSOR
     #define HAS_GPS
-    #define HAS_NIMBLE_2
-    #define HAS_IDF_3
+    //#define HAS_NIMBLE_2  // core 2.0.11 for deauth/BLE (see ESP32_LDDB note)
+    //#define HAS_IDF_3
     #define HAS_C5_SD
     #define HAS_DIRECT_UPLOAD
   #endif
@@ -376,8 +376,8 @@
     #define USE_SD
     #define HAS_TEMP_SENSOR
     #define HAS_GPS
-    #define HAS_NIMBLE_2
-    #define HAS_IDF_3
+    //#define HAS_NIMBLE_2  // core 2.0.11 for deauth/BLE (see ESP32_LDDB note)
+    //#define HAS_IDF_3
     #define HAS_C5_SD
     #define HAS_DIRECT_UPLOAD
   #endif
@@ -398,8 +398,8 @@
     #define USE_SD
     #define HAS_TEMP_SENSOR
     #define HAS_GPS
-    #define HAS_NIMBLE_2
-    #define HAS_IDF_3
+    //#define HAS_NIMBLE_2  // core 2.0.11 for deauth/BLE (see ESP32_LDDB note)
+    //#define HAS_IDF_3
     #define HAS_C5_SD
     #define HAS_DIRECT_UPLOAD
   #endif
@@ -443,8 +443,8 @@
     #define HAS_GPS
     #define HAS_CYD_TOUCH
     #define HAS_CYD_PORTRAIT
-    #define HAS_NIMBLE_2
-    #define HAS_IDF_3
+    //#define HAS_NIMBLE_2  // core 2.0.11 for deauth/BLE (see ESP32_LDDB note)
+    //#define HAS_IDF_3
     #define HAS_DIRECT_UPLOAD
   #endif
 
@@ -506,8 +506,8 @@
     #define USE_SD
     #define HAS_TEMP_SENSOR
     #define HAS_GPS
-    #define HAS_NIMBLE_2
-    #define HAS_IDF_3
+    //#define HAS_NIMBLE_2  // core 2.0.11 for deauth/BLE (see ESP32_LDDB note)
+    //#define HAS_IDF_3
     #define HAS_C5_SD
     #define HAS_DIRECT_UPLOAD
   #endif
@@ -572,8 +572,13 @@
     #define USE_SD
     //#define HAS_TEMP_SENSOR
     //#define HAS_GPS
-    #define HAS_NIMBLE_2
-    #define HAS_IDF_3
+    // Built on arduino-esp32 core 2.0.11 (IDF 4.4 / NimBLE 1.3.8): on IDF 5.x the
+    // Wi-Fi stack drops raw deauth/disassoc frames from esp_wifi_80211_tx despite
+    // the ieee80211_raw_frame_sanity_check override, and BLE spam runs the less
+    // reliable NimBLE 2.x path. Core 2.0.11 restores both. Keep the build matrix
+    // row (build-all-firmware.sh) for ESP32_LDDB on the 2.0.11 group in sync.
+    //#define HAS_NIMBLE_2
+    //#define HAS_IDF_3
     //#define HAS_DIRECT_UPLOAD
   #endif
 
@@ -589,8 +594,8 @@
     #define USE_SD
     //#define HAS_TEMP_SENSOR
     #define HAS_GPS
-    #define HAS_NIMBLE_2
-    #define HAS_IDF_3
+    //#define HAS_NIMBLE_2  // core 2.0.11 for deauth/BLE (see ESP32_LDDB note)
+    //#define HAS_IDF_3
     #define HAS_DIRECT_UPLOAD
   #endif
 
