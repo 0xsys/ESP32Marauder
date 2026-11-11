@@ -1,4 +1,5 @@
 #include "Buffer.h"
+#include "PcapHeader.h"
 #include "lang_var.h"
 
 Buffer::Buffer(){
@@ -8,21 +9,22 @@ Buffer::Buffer(){
 
 void Buffer::createFile(const char* name, bool is_pcap, bool is_gpx){
   int i=0;
+  String prefix = directory ? String(directory) + "/" : "/";
   if (is_pcap) {
     do{
-      fileName = "/"+String(name)+"_"+(String)i+".pcap";
+      fileName = prefix+String(name)+"_"+(String)i+".pcap";
       i++;
     } while(fs->exists(fileName));
   }
   else if ((!is_pcap) && (!is_gpx)) {
     do{
-      fileName = "/"+String(name)+"_"+(String)i+".log";
+      fileName = prefix+String(name)+"_"+(String)i+".log";
       i++;
     } while(fs->exists(fileName));
   }
   else {
     do{
-      fileName = "/"+String(name)+"_"+(String)i+".gpx";
+      fileName = prefix+String(name)+"_"+(String)i+".gpx";
       i++;
     } while(fs->exists(fileName));
   }
@@ -42,18 +44,18 @@ void Buffer::open(bool is_pcap){
   writing = true;
 
   if (is_pcap) {
-    write(uint32_t(0xa1b2c3d4)); // magic number
-    write(uint16_t(2)); // major version number
-    write(uint16_t(4)); // minor version number
-    write(int32_t(0)); // GMT to local correction
-    write(uint32_t(0)); // accuracy of timestamps
-    write(uint32_t(SNAP_LEN)); // max length of captured packets, in octets
-    write(uint32_t(105)); // data link type
+    uint8_t header[marauder::kPcapGlobalHeaderSize];
+    marauder::makePcapGlobalHeader(SNAP_LEN, header);
+    write(header, sizeof(header));
   }
 }
 
 String Buffer::getFileName() {
   return this->fileName;
+}
+
+void Buffer::setDirectory(const char* path) {
+  directory = path;
 }
 
 void Buffer::openFile(const char* file_name, fs::FS* fs, bool serial, bool is_pcap, bool is_gpx) {
@@ -89,17 +91,30 @@ void Buffer::gpxOpen(const char* file_name, fs::FS* fs, bool serial) {
 }
 
 void Buffer::add(const uint8_t* buf, uint32_t len, bool is_pcap){
+  constexpr uint32_t pcap_record_header_len = 16;
+  const uint32_t record_header_len = is_pcap ? pcap_record_header_len : 0;
+  if (!writing || !buf || len > BUF_SIZE || record_header_len + len > BUF_SIZE) return;
+
+  portENTER_CRITICAL(&bufferMux);
+
+  if (saving) {
+    portEXIT_CRITICAL(&bufferMux);
+    return;
+  }
+
   // buffer is full -> drop packet
-  if((useA && bufSizeA + len >= BUF_SIZE && bufSizeB > 0) || (!useA && bufSizeB + len >= BUF_SIZE && bufSizeA > 0)){
+  if((useA && bufSizeA + record_header_len + len > BUF_SIZE && bufSizeB > 0) ||
+     (!useA && bufSizeB + record_header_len + len > BUF_SIZE && bufSizeA > 0)){
     //Serial.print(";"); 
+    portEXIT_CRITICAL(&bufferMux);
     return;
   }
   
-  if(useA && bufSizeA + len + 16 >= BUF_SIZE && bufSizeB == 0){
+  if(useA && bufSizeA + record_header_len + len > BUF_SIZE && bufSizeB == 0){
     useA = false;
     //Serial.println("\nswitched to buffer B");
   }
-  else if(!useA && bufSizeB + len + 16 >= BUF_SIZE && bufSizeA == 0){
+  else if(!useA && bufSizeB + record_header_len + len > BUF_SIZE && bufSizeA == 0){
     useA = true;
     //Serial.println("\nswitched to buffer A");
   }
@@ -110,13 +125,19 @@ void Buffer::add(const uint8_t* buf, uint32_t len, bool is_pcap){
   microSeconds -= seconds*1000*1000; // e.g. 45200400 - 45*1000*1000 = 45200400 - 45000000 = 400us (because we only need the offset)
   
   if (is_pcap) {
-    write(seconds); // ts_sec
-    write(microSeconds); // ts_usec
-    write(len); // incl_len
-    write(len); // orig_len
+    uint8_t header[pcap_record_header_len];
+    const uint32_t values[] = {seconds, microSeconds, len, len};
+    for (size_t i = 0; i < 4; i++) {
+      header[i * 4] = values[i];
+      header[i * 4 + 1] = values[i] >> 8;
+      header[i * 4 + 2] = values[i] >> 16;
+      header[i * 4 + 3] = values[i] >> 24;
+    }
+    writeUnlocked(header, sizeof(header));
   }
   
-  write(buf, len); // packet payload
+  writeUnlocked(buf, len); // packet payload
+  portEXIT_CRITICAL(&bufferMux);
 }
 
 void Buffer::append(wifi_promiscuous_pkt_t *packet, int len) {
@@ -159,16 +180,23 @@ void Buffer::write(uint16_t n){
 }
 
 void Buffer::write(const uint8_t* buf, uint32_t len){
-  if(!writing) return;
-  while(saving) delay(10);
-  
+  if(!writing || !buf || len > BUF_SIZE) return;
+  portENTER_CRITICAL(&bufferMux);
+  if (!saving) writeUnlocked(buf, len);
+  portEXIT_CRITICAL(&bufferMux);
+}
+
+bool Buffer::writeUnlocked(const uint8_t* buf, uint32_t len){
   if(useA){
+    if (len > BUF_SIZE - bufSizeA) return false;
     memcpy(&bufA[bufSizeA], buf, len);
     bufSizeA += len;
   }else{
+    if (len > BUF_SIZE - bufSizeB) return false;
     memcpy(&bufB[bufSizeB], buf, len);
     bufSizeB += len;
   }
+  return true;
 }
 
 void Buffer::saveFs(){
@@ -239,18 +267,22 @@ void Buffer::saveSerial() {
 }
 
 void Buffer::save() {
+  portENTER_CRITICAL(&bufferMux);
   saving = true;
 
   if((bufSizeA + bufSizeB) == 0){
     saving = false;
+    portEXIT_CRITICAL(&bufferMux);
     return;
   }
+  portEXIT_CRITICAL(&bufferMux);
 
   if(this->fs) saveFs();
   if(this->serial) saveSerial();
 
+  portENTER_CRITICAL(&bufferMux);
   bufSizeA = 0;
   bufSizeB = 0;
-
   saving = false;
+  portEXIT_CRITICAL(&bufferMux);
 }

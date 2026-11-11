@@ -1,5 +1,77 @@
 #include "settings.h"
 
+static JsonObject findSavedWifiSetting(DynamicJsonDocument& json) {
+  JsonArray settings = json["Settings"].as<JsonArray>();
+  for (JsonObject setting : settings) {
+    if (strcmp(setting["name"] | "", SAVED_WIFI_KEY_NAME) == 0)
+      return setting;
+  }
+  return JsonObject();
+}
+
+static JsonObject ensureSavedWifiSetting(DynamicJsonDocument& json) {
+  JsonObject setting = findSavedWifiSetting(json);
+  if (!setting.isNull())
+    return setting;
+
+  JsonArray settings = json["Settings"].as<JsonArray>();
+  setting = settings.createNestedObject();
+  setting["name"] = SAVED_WIFI_KEY_NAME;
+  setting["type"] = "wifi_list";
+  setting.createNestedArray("value");
+  JsonObject range = setting.createNestedObject("range");
+  range["min"] = 0;
+  range["max"] = MAX_SAVED_WIFI_PROFILES;
+  return setting;
+}
+
+static JsonObject findGeofenceSetting(DynamicJsonDocument& json) {
+  for (JsonObject setting : json["Settings"].as<JsonArray>()) {
+    if (strcmp(setting["name"] | "", GEOFENCES_KEY_NAME) == 0)
+      return setting;
+  }
+  return JsonObject();
+}
+
+static JsonObject ensureGeofenceSetting(DynamicJsonDocument& json) {
+  JsonObject setting = findGeofenceSetting(json);
+  if (!setting.isNull()) return setting;
+  setting = json["Settings"].as<JsonArray>().createNestedObject();
+  setting["name"] = GEOFENCES_KEY_NAME;
+  setting["type"] = "geofence_list";
+  setting.createNestedArray("value");
+  setting["range"]["min"] = 0;
+  setting["range"]["max"] = MAX_GEOFENCES;
+  return setting;
+}
+
+static bool ensureCensorSetting(DynamicJsonDocument& json) {
+  for (JsonObject setting : json["Settings"].as<JsonArray>())
+    if (strcmp(setting["name"] | "", "Censor") == 0) return false;
+  JsonObject setting = json["Settings"].as<JsonArray>().createNestedObject();
+  setting["name"] = "Censor";
+  setting["type"] = "bool";
+  setting["value"] = false;
+  setting["range"]["min"] = false;
+  setting["range"]["max"] = true;
+  return true;
+}
+
+static bool writeSettingsDocument(DynamicJsonDocument& json, String& cache) {
+  File file = SPIFFS.open("/settings.json", FILE_WRITE);
+  if (!file) return false;
+  const bool ok = serializeJson(json, file) > 0;
+  file.close();
+  if (ok) {
+    // ArduinoJson appends when serializing into an existing String. Replace
+    // the cache so runtime readers see the document just written to SPIFFS,
+    // rather than continuing to parse the stale document at the front.
+    cache = "";
+    serializeJson(json, cache);
+  }
+  return ok;
+}
+
 // ---------------------------------------------------------------------------
 // _buildCache — called once after json_settings_string is loaded/updated.
 // Parses the JSON exactly once and fills every field of _cache.
@@ -22,6 +94,8 @@ void Settings::_buildCache() {
       _cache.ForceProbe = json["Settings"][i]["value"].as<bool>();
     else if (strcmp(name, "SavePCAP") == 0)
       _cache.SavePCAP = json["Settings"][i]["value"].as<bool>();
+    else if (strcmp(name, "Censor") == 0)
+      _cache.Censor = json["Settings"][i]["value"].as<bool>();
     else if (strcmp(name, "EnableLED") == 0)
       _cache.EnableLED = json["Settings"][i]["value"].as<bool>();
     else if (strcmp(name, "EPDeauth") == 0)
@@ -32,6 +106,12 @@ void Settings::_buildCache() {
       _cache.ClientSSID = json["Settings"][i]["value"].as<String>();
     else if (strcmp(name, "ClientPW") == 0)
       _cache.ClientPW = json["Settings"][i]["value"].as<String>();
+    else if (strcmp(name, "wu") == 0)
+      _cache.wu = json["Settings"][i]["value"].as<String>();
+    else if (strcmp(name, "wt") == 0)
+      _cache.wt = json["Settings"][i]["value"].as<String>();
+    else if (strcmp(name, WDG_KEY_NAME) == 0)
+      _cache.wdg_key = json["Settings"][i]["value"].as<String>();
   }
 }
 
@@ -71,6 +151,52 @@ bool Settings::begin() {
   if (error)
     Serial.println(error.f_str());
 
+  settingsFile.close();
+
+  bool settings_changed = false;
+  JsonObject saved_wifi_setting = findSavedWifiSetting(jsonBuffer);
+  if (saved_wifi_setting.isNull()) {
+    saved_wifi_setting = ensureSavedWifiSetting(jsonBuffer);
+    settings_changed = true;
+  }
+  if (findGeofenceSetting(jsonBuffer).isNull()) {
+    ensureGeofenceSetting(jsonBuffer);
+    settings_changed = true;
+  }
+  if (ensureCensorSetting(jsonBuffer)) settings_changed = true;
+
+  // One-time, backward-compatible migration of the previous single profile.
+  JsonArray saved_wifi = saved_wifi_setting["value"].as<JsonArray>();
+  if (saved_wifi.isNull()) {
+    saved_wifi = saved_wifi_setting.createNestedArray("value");
+    settings_changed = true;
+  }
+  if (saved_wifi.size() == 0) {
+    const char* legacy_ssid = "";
+    const char* legacy_password = "";
+    for (JsonObject setting : jsonBuffer["Settings"].as<JsonArray>()) {
+      const char* setting_name = setting["name"] | "";
+      if (strcmp(setting_name, "ClientSSID") == 0)
+        legacy_ssid = setting["value"] | "";
+      else if (strcmp(setting_name, "ClientPW") == 0)
+        legacy_password = setting["value"] | "";
+    }
+    if (legacy_ssid[0] != '\0') {
+      JsonObject profile = saved_wifi.createNestedObject();
+      profile["ssid"] = legacy_ssid;
+      profile["password"] = legacy_password;
+      settings_changed = true;
+    }
+  }
+
+  if (settings_changed) {
+    File updated_settings = SPIFFS.open("/settings.json", FILE_WRITE);
+    if (!updated_settings)
+      return false;
+    serializeJson(jsonBuffer, updated_settings);
+    updated_settings.close();
+  }
+
   serializeJson(jsonBuffer, json_string);
 
   this->json_settings_string = json_string;
@@ -107,9 +233,14 @@ template <> int Settings::loadSetting<int>(const char* key) {
 template <> String Settings::loadSetting<String>(const char* key) {
   if (strcmp(key, "ClientSSID") == 0)
     return _cache.ClientSSID;
-
   if (strcmp(key, "ClientPW") == 0)
     return _cache.ClientPW;
+    if (strcmp(key, "wu") == 0)
+    return _cache.wu;
+  if (strcmp(key, "wt") == 0)
+    return _cache.wt;
+  if (strcmp(key, WDG_KEY_NAME) == 0)
+    return _cache.wdg_key;
 
   // Unknown String key: fall back to JSON so the setting can be auto-created.
   DynamicJsonDocument json(JSON_SETTING_SIZE);
@@ -145,6 +276,8 @@ template <> bool Settings::loadSetting<bool>(const char* key) {
     return _cache.ForceProbe;
   if (strcmp(key, "SavePCAP") == 0)
     return _cache.SavePCAP;
+  if (strcmp(key, "Censor") == 0)
+    return _cache.Censor;
   if (strcmp(key, "EnableLED") == 0)
     return _cache.EnableLED;
   if (strcmp(key, "EPDeauth") == 0)
@@ -185,6 +318,8 @@ template <> uint8_t Settings::loadSetting<uint8_t>(const char* key) {
 
   if (strcmp(key, "SavePCAP") == 0)
     return (uint8_t)_cache.SavePCAP;
+  if (strcmp(key, "Censor") == 0)
+    return (uint8_t)_cache.Censor;
 
   if (strcmp(key, "EnableLED") == 0)
     return (uint8_t)_cache.EnableLED;
@@ -250,6 +385,8 @@ template <> bool Settings::saveSetting<bool>(const char* key, bool value) {
         _cache.ForceProbe = value;
       else if (strcmp(key, "SavePCAP") == 0)
         _cache.SavePCAP = value;
+      else if (strcmp(key, "Censor") == 0)
+        _cache.Censor = value;
       else if (strcmp(key, "EnableLED") == 0)
         _cache.EnableLED = value;
       else if (strcmp(key, "EPDeauth") == 0)
@@ -302,6 +439,12 @@ template <> bool Settings::saveSetting<bool>(const char* key, String value) {
         _cache.ClientSSID = value;
       else if (strcmp(key, "ClientPW") == 0)
         _cache.ClientPW = value;
+      else if (strcmp(key, "wu") == 0)
+        _cache.wu = value;
+      else if (strcmp(key, "wt") == 0)
+        _cache.wt = value;
+      else if (strcmp(key, WDG_KEY_NAME) == 0)
+        _cache.wdg_key = value;
 
       this->printJsonSettings(settings_string);
 
@@ -380,9 +523,13 @@ void Settings::printJsonSettings(String json_string) {
 
   Serial.println("Settings\n----------------------------------------------");
   for (int i = 0; i < (int)json["Settings"].size(); i++) {
-    Serial.println("Name: " + json["Settings"][i]["name"].as<String>());
+    String setting_name = json["Settings"][i]["name"].as<String>();
+    Serial.println("Name: " + setting_name);
     Serial.println("Type: " + json["Settings"][i]["type"].as<String>());
-    Serial.println("Value: " + json["Settings"][i]["value"].as<String>() + "\n");
+    if (setting_name == "ClientPW" || setting_name == SAVED_WIFI_KEY_NAME)
+      Serial.println(F("Value: [redacted]\n"));
+    else
+      Serial.println("Value: " + json["Settings"][i]["value"].as<String>() + "\n");
   }
 }
 
@@ -451,6 +598,42 @@ bool Settings::createDefaultSettings(fs::FS &fs, bool spec, uint8_t index, const
     jsonBuffer["Settings"][7]["range"]["min"] = "";
     jsonBuffer["Settings"][7]["range"]["max"] = "";
 
+    jsonBuffer["Settings"][8]["name"] = "wu";
+    jsonBuffer["Settings"][8]["type"] = "String";
+    jsonBuffer["Settings"][8]["value"] = "";
+    jsonBuffer["Settings"][8]["range"]["min"] = "";
+    jsonBuffer["Settings"][8]["range"]["max"] = "";
+
+    jsonBuffer["Settings"][9]["name"] = "wt";
+    jsonBuffer["Settings"][9]["type"] = "String";
+    jsonBuffer["Settings"][9]["value"] = "";
+    jsonBuffer["Settings"][9]["range"]["min"] = "";
+    jsonBuffer["Settings"][9]["range"]["max"] = "";
+
+    jsonBuffer["Settings"][10]["name"] = WDG_KEY_NAME;
+    jsonBuffer["Settings"][10]["type"] = "String";
+    jsonBuffer["Settings"][10]["value"] = "";
+    jsonBuffer["Settings"][10]["range"]["min"] = "";
+    jsonBuffer["Settings"][10]["range"]["max"] = "";
+
+    jsonBuffer["Settings"][11]["name"] = SAVED_WIFI_KEY_NAME;
+    jsonBuffer["Settings"][11]["type"] = "wifi_list";
+    jsonBuffer["Settings"][11].createNestedArray("value");
+    jsonBuffer["Settings"][11]["range"]["min"] = 0;
+    jsonBuffer["Settings"][11]["range"]["max"] = MAX_SAVED_WIFI_PROFILES;
+
+    jsonBuffer["Settings"][12]["name"] = GEOFENCES_KEY_NAME;
+    jsonBuffer["Settings"][12]["type"] = "geofence_list";
+    jsonBuffer["Settings"][12].createNestedArray("value");
+    jsonBuffer["Settings"][12]["range"]["min"] = 0;
+    jsonBuffer["Settings"][12]["range"]["max"] = MAX_GEOFENCES;
+
+    jsonBuffer["Settings"][13]["name"] = "Censor";
+    jsonBuffer["Settings"][13]["type"] = "bool";
+    jsonBuffer["Settings"][13]["value"] = false;
+    jsonBuffer["Settings"][13]["range"]["min"] = false;
+    jsonBuffer["Settings"][13]["range"]["max"] = true;
+
     serializeJson(jsonBuffer, settingsFile);
     serializeJson(jsonBuffer, settings_string);
   } else {
@@ -492,4 +675,153 @@ bool Settings::createDefaultSettings(fs::FS &fs, bool spec, uint8_t index, const
   this->printJsonSettings(settings_string);
 
   return true;
+}
+
+uint8_t Settings::getSavedWifiCount() {
+  DynamicJsonDocument json(JSON_SETTING_SIZE);
+  if (deserializeJson(json, this->json_settings_string))
+    return 0;
+  JsonObject setting = findSavedWifiSetting(json);
+  if (setting.isNull())
+    return 0;
+  const size_t count = setting["value"].as<JsonArray>().size();
+  return count > MAX_SAVED_WIFI_PROFILES ? MAX_SAVED_WIFI_PROFILES : count;
+}
+
+bool Settings::loadSavedWifiCredential(uint8_t index, String& ssid, String& password) {
+  ssid = "";
+  password = "";
+  DynamicJsonDocument json(JSON_SETTING_SIZE);
+  if (deserializeJson(json, this->json_settings_string))
+    return false;
+  JsonObject setting = findSavedWifiSetting(json);
+  JsonArray profiles = setting["value"].as<JsonArray>();
+  if (setting.isNull() || index >= profiles.size())
+    return false;
+  ssid = profiles[index]["ssid"].as<String>();
+  password = profiles[index]["password"].as<String>();
+  return ssid.length() > 0;
+}
+
+WifiCredentialSaveResult Settings::saveWifiCredential(const String& ssid, const String& password, int8_t replace_index) {
+  if (ssid.length() == 0 || ssid.length() > 32 || password.length() > 63)
+    return WIFI_CREDENTIAL_ERROR;
+
+  DynamicJsonDocument json(JSON_SETTING_SIZE);
+  if (deserializeJson(json, this->json_settings_string))
+    return WIFI_CREDENTIAL_ERROR;
+  JsonObject setting = ensureSavedWifiSetting(json);
+  JsonArray profiles = setting["value"].as<JsonArray>();
+
+  int8_t existing_index = -1;
+  for (uint8_t i = 0; i < profiles.size(); i++) {
+    if (ssid == profiles[i]["ssid"].as<String>()) {
+      existing_index = i;
+      break;
+    }
+  }
+
+  WifiCredentialSaveResult result = WIFI_CREDENTIAL_SAVED;
+  int8_t target_index = existing_index;
+  if (existing_index >= 0) {
+    result = WIFI_CREDENTIAL_UPDATED;
+  }
+  else if (profiles.size() < MAX_SAVED_WIFI_PROFILES) {
+    profiles.createNestedObject();
+    target_index = profiles.size() - 1;
+  }
+  else if (replace_index >= 0 && replace_index < (int8_t)profiles.size()) {
+    target_index = replace_index;
+  }
+  else {
+    return WIFI_CREDENTIAL_FULL;
+  }
+
+  // Successful/new credentials become the first profile tried. Rotate the
+  // small bounded array without retaining a second credential collection.
+  for (int8_t i = target_index; i > 0; i--) {
+    profiles[i]["ssid"] = profiles[i - 1]["ssid"].as<String>();
+    profiles[i]["password"] = profiles[i - 1]["password"].as<String>();
+  }
+  profiles[0]["ssid"] = ssid;
+  profiles[0]["password"] = password;
+
+  if (!writeSettingsDocument(json, this->json_settings_string))
+    return WIFI_CREDENTIAL_ERROR;
+  return result;
+}
+
+bool Settings::removeSavedWifiCredential(uint8_t index) {
+  DynamicJsonDocument json(JSON_SETTING_SIZE);
+  if (deserializeJson(json, this->json_settings_string))
+    return false;
+  JsonObject setting = findSavedWifiSetting(json);
+  JsonArray profiles = setting["value"].as<JsonArray>();
+  if (setting.isNull() || index >= profiles.size())
+    return false;
+  profiles.remove(index);
+
+  return writeSettingsDocument(json, this->json_settings_string);
+}
+
+bool Settings::markSavedWifiSuccessful(uint8_t index) {
+  // The first profile is already the most recently successful. Avoid an
+  // unnecessary settings-file rewrite on every normal connection.
+  if (index == 0)
+    return getSavedWifiCount() > 0;
+  String ssid;
+  String password;
+  if (!loadSavedWifiCredential(index, ssid, password))
+    return false;
+  return saveWifiCredential(ssid, password) != WIFI_CREDENTIAL_ERROR;
+}
+
+bool Settings::loadGeofence(uint8_t index, GeofenceConfig& geofence) {
+  geofence = GeofenceConfig();
+  if (index >= MAX_GEOFENCES) return false;
+  DynamicJsonDocument json(JSON_SETTING_SIZE);
+  if (deserializeJson(json, this->json_settings_string)) return false;
+  JsonArray entries = findGeofenceSetting(json)["value"].as<JsonArray>();
+  for (JsonObject entry : entries) {
+    if ((uint8_t)(entry["slot"] | 255) != index) continue;
+    geofence.enabled = entry["enabled"] | false;
+    geofence.latitude = entry["lat"] | 0.0;
+    geofence.longitude = entry["lon"] | 0.0;
+    geofence.radiusMiles = entry["radius_mi"] | 0.1f;
+    geofence.name = entry["name"].as<String>();
+    return geofence.enabled;
+  }
+  return false;
+}
+
+bool Settings::saveGeofence(uint8_t index, const GeofenceConfig& geofence) {
+  if (index >= MAX_GEOFENCES || !geofence.enabled || geofence.name.length() == 0 ||
+      geofence.name.length() > GEOFENCE_NAME_MAX || !isfinite(geofence.latitude) ||
+      !isfinite(geofence.longitude) || geofence.latitude < -90.0 || geofence.latitude > 90.0 ||
+      geofence.longitude < -180.0 || geofence.longitude > 180.0 ||
+      geofence.radiusMiles < 0.1f || geofence.radiusMiles > 1.0f) return false;
+  DynamicJsonDocument json(JSON_SETTING_SIZE);
+  if (deserializeJson(json, this->json_settings_string)) return false;
+  JsonArray entries = ensureGeofenceSetting(json)["value"].as<JsonArray>();
+  JsonObject target;
+  for (JsonObject entry : entries) if ((uint8_t)(entry["slot"] | 255) == index) target = entry;
+  if (target.isNull()) target = entries.createNestedObject();
+  target["slot"] = index;
+  target["enabled"] = true;
+  target["name"] = geofence.name;
+  target["lat"] = geofence.latitude;
+  target["lon"] = geofence.longitude;
+  target["radius_mi"] = geofence.radiusMiles;
+  return writeSettingsDocument(json, this->json_settings_string);
+}
+
+bool Settings::clearGeofence(uint8_t index) {
+  if (index >= MAX_GEOFENCES) return false;
+  DynamicJsonDocument json(JSON_SETTING_SIZE);
+  if (deserializeJson(json, this->json_settings_string)) return false;
+  JsonArray entries = ensureGeofenceSetting(json)["value"].as<JsonArray>();
+  for (uint8_t i = 0; i < entries.size(); i++) {
+    if ((uint8_t)(entries[i]["slot"] | 255) == index) { entries.remove(i); break; }
+  }
+  return writeSettingsDocument(json, this->json_settings_string);
 }

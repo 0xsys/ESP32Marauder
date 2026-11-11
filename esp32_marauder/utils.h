@@ -7,6 +7,8 @@
 #include <WiFi.h>
 
 #include "configs.h"
+#include "IPv4Range.h"
+#include "MarauderMacAddress.h"
 
 #include "esp_heap_caps.h"
 #include "mbedtls/base64.h"
@@ -20,6 +22,7 @@ struct Station {
   bool selected;
   uint16_t packets;
   uint16_t ap;
+  uint32_t last_seen_ms = 0;
 };
 
 struct ProbeReqSsid {
@@ -170,99 +173,126 @@ inline void generateRandomMac(uint8_t* mac) {
 }
 
 inline String macToString(const Station& station) {
-  char macStr[18]; // 6 pairs of hex digits + 5 colons + null terminator
-  snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
-           station.mac[0], station.mac[1], station.mac[2],
-           station.mac[3], station.mac[4], station.mac[5]);
+  char macStr[marauder::kMacAddressTextLength + 1];
+  marauder::formatMacAddress(station.mac, macStr);
   return String(macStr);
 }
 
 inline String macToString(uint8_t macAddr[6]) {
-  char macStr[18]; // 17 characters for "XX:XX:XX:XX:XX:XX" + 1 null terminator
-  snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X", 
-    macAddr[0], macAddr[1], macAddr[2], 
-    macAddr[3], macAddr[4], macAddr[5]);
+  char macStr[marauder::kMacAddressTextLength + 1];
+  marauder::formatMacAddress(macAddr, macStr);
   return String(macStr);
 }
 
 inline String macToString(const uint8_t macAddr[6]) {
-  char macStr[18]; // 17 characters for "XX:XX:XX:XX:XX:XX" + 1 null terminator
-  snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X", 
-    macAddr[0], macAddr[1], macAddr[2], 
-    macAddr[3], macAddr[4], macAddr[5]);
+  char macStr[marauder::kMacAddressTextLength + 1];
+  marauder::formatMacAddress(macAddr, macStr);
   return String(macStr);
 }
 
 inline void convertMacStringToUint8(const String& macStr, uint8_t macAddr[6]) {
-    // Ensure the input string is in the format "XX:XX:XX:XX:XX:XX"
-    if (macStr.length() != 17)
-        return;
-
-    // Parse the MAC address string and fill the uint8_t array
-    for (int i = 0; i < 6; i++) {
-        macAddr[i] = (uint8_t)strtol(macStr.substring(i * 3, i * 3 + 2).c_str(), nullptr, 16);
-    }
+  marauder::parseMacAddress(macStr.c_str(), macAddr);
 }
 
 
-inline IPAddress getNextIP(IPAddress currentIP, IPAddress subnetMask) {
-  // Convert IPAddress to uint32_t
-  uint32_t ipInt = (currentIP[0] << 24) | (currentIP[1] << 16) | (currentIP[2] << 8) | currentIP[3];
-  uint32_t maskInt = (subnetMask[0] << 24) | (subnetMask[1] << 16) | (subnetMask[2] << 8) | subnetMask[3];
+inline uint32_t ipAddressToUint32(const IPAddress& address) {
+  return (static_cast<uint32_t>(address[0]) << 24) |
+         (static_cast<uint32_t>(address[1]) << 16) |
+         (static_cast<uint32_t>(address[2]) << 8) |
+         static_cast<uint32_t>(address[3]);
+}
 
-  uint32_t networkBase = ipInt & maskInt;
-  uint32_t broadcast = networkBase | ~maskInt;
-
-  uint32_t nextIP = ipInt + 1;
-
-  if (nextIP <= networkBase) {
-    nextIP = networkBase + 1;
-  }
-  if (nextIP >= broadcast) {
-    return IPAddress(0, 0, 0, 0); // no more IPs
-  }
-
+inline IPAddress uint32ToIPAddress(uint32_t address) {
   return IPAddress(
-    (nextIP >> 24) & 0xFF,
-    (nextIP >> 16) & 0xFF,
-    (nextIP >> 8) & 0xFF,
-    nextIP & 0xFF
+    (address >> 24) & 0xFF,
+    (address >> 16) & 0xFF,
+    (address >> 8) & 0xFF,
+    address & 0xFF
   );
 }
 
-inline IPAddress getPrevIP(IPAddress currentIP, IPAddress subnetMask, uint16_t stepsBack) {
-  // Convert IPAddress to uint32_t
-  uint32_t ipInt = (currentIP[0] << 24) | (currentIP[1] << 16) | (currentIP[2] << 8) | currentIP[3];
-  uint32_t maskInt = (subnetMask[0] << 24) | (subnetMask[1] << 16) | (subnetMask[2] << 8) | subnetMask[3];
+inline marauder::IPv4HostRange getIPHostRange(const IPAddress& address,
+                                               const IPAddress& subnetMask) {
+  return marauder::ipv4HostRange(ipAddressToUint32(address),
+                                 ipAddressToUint32(subnetMask));
+}
 
-  uint32_t networkBase = ipInt & maskInt;
-  uint32_t broadcast = networkBase | ~maskInt;
+inline IPAddress getNetworkIP(const IPAddress& address,
+                              const IPAddress& subnetMask) {
+  return uint32ToIPAddress(getIPHostRange(address, subnetMask).network);
+}
 
-  uint32_t prevIP = ipInt - stepsBack;
+inline IPAddress getNextIP(const IPAddress& currentIP,
+                           const IPAddress& subnetMask) {
+  const marauder::IPv4HostRange range = getIPHostRange(currentIP, subnetMask);
+  return uint32ToIPAddress(
+      marauder::nextIPv4Host(ipAddressToUint32(currentIP), range));
+}
 
-  // Ensure prevIP is not below the usable range
-  if (prevIP <= networkBase) {
-    return IPAddress(0, 0, 0, 0);  // No more IPs
-  }
-
-  return IPAddress(
-    (prevIP >> 24) & 0xFF,
-    (prevIP >> 16) & 0xFF,
-    (prevIP >> 8) & 0xFF,
-    prevIP & 0xFF
-  );
+inline IPAddress getPrevIP(const IPAddress& currentIP,
+                           const IPAddress& subnetMask, uint16_t stepsBack) {
+  const marauder::IPv4HostRange range = getIPHostRange(currentIP, subnetMask);
+  return uint32ToIPAddress(marauder::previousIPv4Host(
+      ipAddressToUint32(currentIP), stepsBack, range));
 }
 
 inline uint16_t getNextPort(uint16_t port) {
   return port + 1;
 }
 
-String base64Encode(const String& input) {
+inline String base64Encode(const String& input) {
   size_t outputLen;
   unsigned char output[256];
   mbedtls_base64_encode(output, sizeof(output), &outputLen,
                         (const unsigned char*)input.c_str(), input.length());
   return String((char*)output).substring(0, outputLen);
+}
+
+inline static void printHex(const uint8_t *data, size_t len) {
+  for (size_t i = 0; i < len; i++) {
+    if (data[i] < 0x10) Serial.print('0');
+    Serial.print(data[i], HEX);
+    if (i + 1 < len) Serial.print(' ');
+  }
+}
+
+inline static void printStringData(const char *label, const std::string &data) {
+  Serial.printf("%s [%u]: ", label, (unsigned)data.length());
+  printHex((const uint8_t *)data.data(), data.length());
+  Serial.println();
+}
+
+inline static uint8_t rssiToMenuColor(int rssi) {
+  if (rssi >= -60) {
+    return TFTGREEN;
+  } else if (rssi >= -70) {
+    return TFTYELLOW;
+  } else if (rssi >= -80) {
+    return TFTORANGE;
+  } else {
+    return TFTRED;
+  }
+}
+
+inline static uint16_t rssiToColorScaled(int rssi) {
+  // Clamp to expected BLE RSSI range
+  rssi = constrain(rssi, -100, -40);
+
+  // Map RSSI to 0-255
+  uint8_t green = map(rssi, -100, -40, 0, 255);
+  uint8_t red   = 255 - green;
+
+  // RGB888 -> RGB565
+  return ((red & 0xF8) << 8) |
+          ((green & 0xFC) << 3);
+}
+
+inline static int rssiToBarWidth(int rssi) {
+    // Clamp to the full possible RSSI range
+    rssi = constrain(rssi, -127, 0);
+
+    // Map RSSI to a width between 0 and TFT_WIDTH
+    return map(rssi, -127, 0, 0, TFT_WIDTH);
 }
 
 #endif

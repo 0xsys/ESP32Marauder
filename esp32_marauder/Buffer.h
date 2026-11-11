@@ -26,6 +26,7 @@ class Buffer {
     void append(String log);
     void save();
     String getFileName();
+    void setDirectory(const char* path);
   private:
     void createFile(const char* name, bool is_pcap, bool is_gpx = false);
     void open(bool is_pcap);
@@ -35,9 +36,10 @@ class Buffer {
     void write(uint32_t n);
     void write(uint16_t n);
     void write(const uint8_t* buf, uint32_t len);
+    bool writeUnlocked(const uint8_t* buf, uint32_t len);
     void saveFs();
     void saveSerial();
-    
+
     uint8_t* bufA;
     uint8_t* bufB;
 
@@ -47,8 +49,10 @@ class Buffer {
     bool writing = false; // acceppting writes to buffer
     bool useA = true; // writing to bufA or bufB
     bool saving = false; // currently saving onto the SD card
+    portMUX_TYPE bufferMux = portMUX_INITIALIZER_UNLOCKED;
 
     String fileName = "/0.pcap";
+    const char* directory = NULL;
     File file;
     fs::FS* fs;
     bool serial;

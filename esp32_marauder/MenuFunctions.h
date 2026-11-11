@@ -5,7 +5,7 @@
 
 #include "configs.h"
 
-#if defined(MARAUDER_CARDPUTER) || defined(MARAUDER_CARDPUTER_ADV)
+#if defined(MARAUDER_CARDPUTER) || defined(MARAUDER_CARDPUTER_ADV) || defined(HAS_FACES_KEYBOARD)
   #include "Keyboard.h"
 #endif
 
@@ -18,9 +18,12 @@
 #define BATTERY_ANALOG_ON 0
 
 #include "WiFiScan.h"
+#include "ReconMission.h"
+#include "TargetListSort.h"
 #include "BatteryInterface.h"
 #include "SDInterface.h"
 #include "settings.h"
+#include "MenuInputRepeat.h"
 
 #ifdef HAS_BUTTONS
   #include "Switches.h"
@@ -39,9 +42,13 @@
   #if (C_BTN >= 0)
     extern Switches c_btn;
   #endif
+  #ifdef MARAUDER_POOM
+    extern Switches b_btn;
+  #endif
 #endif
 
 extern WiFiScan wifi_scan_obj;
+extern ReconMission recon_obj;
 extern SDInterface sd_obj;
 // #ifdef HAS_BATTERY
 extern BatteryInterface battery_obj;
@@ -105,6 +112,22 @@ extern Settings settings_obj;
 
 struct Menu;
 
+enum class MenuBuildKind : uint8_t {
+  EAGER,
+  MAIN,
+  RECON,
+  WIFI_ROOT,
+  BLUETOOTH_ROOT,
+  DEVICE_ROOT,
+  GPS_ROOT,
+  WIFI_SCANNER,
+  WIFI_SNIFFER,
+  WIFI_ATTACK,
+  WIFI_GENERAL,
+  BLUETOOTH_SNIFFER,
+  BLUETOOTH_ATTACK,
+};
+
 // Individual Nodes of a menu
 
 struct MenuNode {
@@ -119,15 +142,47 @@ struct MenuNode {
 // Full Menus
 struct Menu {
   String name;
-  LinkedList<MenuNode>* list;
-  Menu                * parentMenu;
+  LinkedList<MenuNode>* list = nullptr;
+  Menu                * parentMenu = nullptr;
   uint16_t               selected = 0;
+  MenuBuildKind          buildKind = MenuBuildKind::EAGER;
 };
 
 
 class MenuFunctions
 {
   private:
+
+    enum class AttackTargetKind : uint8_t {
+      NONE,
+      ACCESS_POINTS,
+      SSIDS,
+      DEAUTH_SCOPE,
+      STATION_SCOPE,
+      EVIL_PORTAL,
+      KARMA,
+    };
+
+    enum class AttackTargetMode : uint8_t {
+      NONE,
+      BROADCAST,
+      ALL_STATIONS,
+      PICK_STATIONS,
+    };
+
+    enum class FoxHuntListKind : uint8_t {
+      AP_TARGETS,
+      APS_WITH_STATIONS,
+      STATION_TARGETS,
+      PINEAPPLE_TARGETS,
+      MULTISSID_TARGETS,
+      BLE_TARGETS,
+      FINDMY_TARGETS,
+      FLIPPER_TARGETS,
+      IBEACON_TARGETS,
+      META_TARGETS,
+      FLOCK_TARGETS,
+    };
 
     String u_result = "";
 
@@ -138,9 +193,35 @@ class MenuFunctions
     uint8_t mini_kb_index = 0;
     uint8_t old_gps_sat_count = 0;
     uint8_t max_graph_value = 0;
+    Menu* marquee_menu = nullptr;
+    uint16_t marquee_selected = 0xFFFF;
+    uint16_t marquee_rendered_offset = 0;
+    uint16_t marquee_max_offset = 0;
+    uint32_t marquee_selected_since = 0;
+    MenuInputRepeat menu_up_repeat;
+    MenuInputRepeat menu_down_repeat;
+    MenuInputRepeat menu_touch_up_repeat;
+    MenuInputRepeat menu_touch_down_repeat;
+    int8_t menu_touch_button = -1;
+
+    void buildWiFiFoxHuntMenu();
+    void buildBluetoothFoxHuntMenu();
+    void buildFoxTargetList(FoxHuntListKind type, int context_ap = -1);
+    void buildFoxSortMenu();
+    void buildFoxFilterMenu();
+    const char* foxSortLabel() const;
+    const char* foxFilterLabel() const;
+    bool foxListSupportsRecent() const;
+    bool foxListSupportsBand() const;
+
+    FoxHuntListKind fox_target_list = FoxHuntListKind::AP_TARGETS;
+    int fox_target_context_ap = -1;
+    TargetSortMode fox_sort_mode = TargetSortMode::SIGNAL_DESC;
+    TargetFilterMode fox_filter_mode = TargetFilterMode::ALL;
 
     // Main menu stuff
     Menu mainMenu;
+    Menu reconMenu;
 
     Menu wifiMenu;
     Menu bluetoothMenu;
@@ -157,18 +238,39 @@ class MenuFunctions
     Menu updateMenu;
     Menu settingsMenu;
     Menu specSettingMenu;
+    Menu geofenceMenu;
+    Menu geofenceActionMenu;
+    #ifdef HAS_MINI_SCREEN
+      Menu geofenceRadiusMenu;
+      GeofenceConfig pendingGeofence;
+      uint8_t pendingGeofenceSlot = 0;
+      bool geofenceMenuRefreshPending = false;
+    #endif
+    uint8_t selectedGeofence = 0;
     //Menu languageMenu;
     Menu sdDeleteMenu;
+    LinkedList<SDDirectoryEntry>* sd_browser_entries = nullptr;
+    LinkedList<String>* sd_delete_selection = nullptr;
+    String sd_browser_path = "/";
+    bool sd_browser_release_pending = false;
+    bool saved_wifi_release_pending = false;
+    void ensureSDDeleteBrowserResources();
+    void releaseSDDeleteBrowserResources();
 
     // WiFi menu stuff
     Menu wifiSnifferMenu;
     Menu wifiScannerMenu;
     Menu wifiAttackMenu;
+    Menu attackModeMenu;
+    Menu attackTargetMenu;
+    Menu attackStationMenu;
+    Menu attackReviewMenu;
     /*#ifdef HAS_GPS
       Menu wardrivingMenu;
     #endif*/
     Menu wifiGeneralMenu;
     Menu wifiAPMenu;
+    Menu savedWifiMenu;
     Menu wifiIPMenu;
     Menu ssidsMenu;
     //#ifdef HAS_BT
@@ -190,18 +292,46 @@ class MenuFunctions
     // Bluetooth menu stuff
     Menu bluetoothSnifferMenu;
     Menu bluetoothAttackMenu;
+    Menu iBeaconMenu;
+    Menu iBeaconInfoMenu;
+    Menu remoteIdMenu;
 
     // Settings things menus
     Menu generateSSIDsMenu;
 
     Menu evilPortalMenu;
 
+    Menu foxHuntMenu;
+    Menu foxSortMenu;
+    Menu foxFilterMenu;
+
+    #ifdef HAS_DIRECT_UPLOAD
+      Menu deleteAllMenu;
+      Menu uploadAllMenu;
+    #endif
+
     //static void lv_tick_handler();
 
     // Menu icons
 
+    void buildUploadFileMenu();
     void setupSDFileList(bool update = false);
     void buildSDFileMenu(bool update = false);
+    void buildSavedWifiMenu(bool replace_mode = false);
+    void buildGeofenceMenu();
+    void buildGeofenceActionMenu(uint8_t slot);
+    String geofenceTextInput(const char* title);
+    bool editGeofence(uint8_t slot, bool use_current_location);
+    #ifdef HAS_MINI_SCREEN
+      void beginMiniGeofenceEdit(uint8_t slot, bool use_current_location);
+      void buildGeofenceRadiusMenu(uint8_t slot, const GeofenceConfig& fence);
+      void deferGeofenceMenuRefresh();
+    #endif
+    void releaseSavedWifiMenu();
+    void buildSDDeleteBrowser(const String& path, bool reset_selection = false);
+    void toggleSDDeleteSelection(const String& path);
+    bool isSDFileSelected(const String& path) const;
+    String parentSDPath(const String& path) const;
     void displayMenuButtons();
     uint16_t getColor(uint16_t color);
     void drawAvgLine(int16_t value);
@@ -219,14 +349,50 @@ class MenuFunctions
     void drawGraphSmall(uint8_t *values);
     void renderGraphUI(uint8_t scan_mode = 0);
     void addNodes(Menu* menu, const char* name, uint8_t color, int place, std::function<void()> callable, bool selected = false);
+    void buildLazyMenu(Menu* menu);
+    void buildWiFiGeneralMenu();
+    void beginAttackPlan(const char* name, uint8_t scan_mode, uint16_t color,
+                         AttackTargetKind target_kind);
+    void buildAttackModeMenu();
+    void buildAttackApPicker();
+    void buildAttackStationApPicker();
+    void buildAttackStationPicker(uint16_t ap_index);
+    void buildAttackSsidPicker();
+    void buildAttackReviewMenu();
+    void startAttackPlan();
+    void clearAttackApSelections();
+    void clearAttackStationSelections();
+    void clearAttackStationsForAp(uint16_t ap_index);
+    void setAttackApScope(uint16_t ap_index, AttackTargetMode mode);
+    int attackApProfileCount() const;
+    int selectedAttackStationCount(uint16_t ap_index) const;
+    int selectedAttackApCount() const;
+    int selectedAttackStationCount() const;
+    int selectedAttackSsidCount() const;
+    #ifdef HAS_BT
+      void buildBluetoothAttackMenu();
+    #endif
+    bool wifi_general_dependents_initialized = false;
+    String attack_plan_name;
+    String attack_plan_scope;
+    uint8_t attack_plan_scan_mode = 0;
+    uint16_t attack_plan_color = TFT_RED;
+    AttackTargetKind attack_target_kind = AttackTargetKind::NONE;
+    AttackTargetMode attack_target_mode = AttackTargetMode::NONE;
+    uint16_t attack_active_ap_index = 0;
+    void releaseLazyMenu(Menu* menu);
+    Menu* lazy_menu_release_pending = nullptr;
     void battery(bool initial = false);
     void battery2(bool initial = false);
     const char* callSetting(const char* key);
     void displaySetting(const char* key, Menu* menu, int index);
-    void buttonSelected(int b, int x = -1);
+    void buttonSelected(int b, int x = -1, uint16_t text_offset = 0);
     void buttonNotSelected(int b, int x = -1);
+    String menuLabelWindow(const String& name, uint16_t offset = 0);
+    uint16_t menuLabelMaxOffset(const String& name);
+    void updateMenuMarquee(uint32_t current_time);
     #ifdef HAS_MINI_SCREEN
-      void drawMiniMenuButton(int b, int x, bool selected);
+      void drawMiniMenuButton(int b, int x, bool selected, uint16_t text_offset = 0);
     #endif
     //#if (!defined(HAS_ILI9341) && defined(HAS_BUTTONS))
     #ifdef HAS_MINI_KB
@@ -234,10 +400,13 @@ class MenuFunctions
     #endif
     //#endif
 
-    #if defined(MARAUDER_CARDPUTER) || defined(MARAUDER_CARDPUTER_ADV)
-      Keyboard_Class M5CardputerKeyboard = Keyboard_Class();
+    #if defined(MARAUDER_CARDPUTER) || defined(MARAUDER_CARDPUTER_ADV) || defined(HAS_FACES_KEYBOARD)
       void updateKeyboard();
       bool isKeyPressed(char c);
+    #endif
+
+    #if defined(MARAUDER_CARDPUTER) || defined(MARAUDER_CARDPUTER_ADV) || defined(HAS_FACES_KEYBOARD) || defined(HAS_TOUCH)
+      bool textInput(char *buffer, size_t bufLen, const char *title);
     #endif
 
   public:
@@ -261,6 +430,11 @@ class MenuFunctions
 
     Menu infoMenu;
     Menu apInfoMenu;
+
+    #ifdef HAS_DIRECT_UPLOAD
+      Menu uploadLogsMenu;
+      Menu actionMenu;
+    #endif
 
     //Ticker tick;
 
@@ -288,5 +462,3 @@ class MenuFunctions
 
 #endif
 #endif
-
-
