@@ -6,6 +6,7 @@
 #include <new>
 #include "MemoryGuard.h"
 #include "WiFiScan.h"
+#include "JsonSerial.h"
 #if defined(HAS_SCREEN)
   #include "Display.h"
 #endif
@@ -387,6 +388,9 @@ void CsiMotionMonitor::printStatus(bool force) {
       correlation_score_, samples_per_second_,
       static_cast<unsigned long>(dropped_), calibration, target_name_.c_str(),
       channel_);
+  // Structured mirror for a JSON host's live CSI-motion screen (gated by jsonMode).
+  JsonSerial::emitCsi(stateLabel(), motion_score_, reliability_, samples_per_second_,
+                      calibration, target_name_, channel_);
 }
 
 void CsiMotionMonitor::updateFusion(uint32_t now_ms) {

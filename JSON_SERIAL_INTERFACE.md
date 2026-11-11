@@ -17,6 +17,7 @@ parsing JSON instead of scraping the human-formatted CLI text.
 |---------|------|
 | `1` | Initial JSON command set (`jsoninfo` / `jsonstatus` / `jsonlist` / `jsonmode`) + screen-free analyzers. |
 | `2` | Length-prefixed **binary capture streaming** (`"capstream"` capability), `jsonbaud` (raise the line rate), and `{"t":"drop","n":N}` loss reporting. Replaces the old text `[BUF/BEGIN]…[BUF/CLOSE]` capture markers. |
+| `3` | v1.20.0 features: `jsonlist d` (Remote ID / drone records) and `jsonlist g` (configured geofences); live `{"t":"fox",…}` (Fox Hunt signal strength) and `{"t":"csi",…}` (CSI motion) streams; extra `jsonstatus` counters (`rid`, `csi`); new caps `"remoteid"`, `"foxhunt"`, `"recon"`, `"csi"`, `"geofence"`. |
 
 A host should read `proto` from the `jsoninfo` reply and the `caps` array (look
 for `"capstream"`) rather than assuming a version — everything in proto 1 still
@@ -54,15 +55,17 @@ Text responses are single lines prefixed with `@J ` followed by one JSON object.
 | Command | Response |
 |---------|----------|
 | `jsoninfo` | `@J {"t":"info","fw":"v1.12.4","proto":2,"board":"<HARDWARE_NAME>","caps":["wifi","capstream",…]}` — handshake / capability advertisement. **Also enables JSON mode** (analyzer streaming). |
-| `jsonstatus` | `@J {"t":"status","mode":<n>,"running":<bool>,"free":<heap>,"aps":<n>,"stas":<n>,"ssids":<n>,"ips":<n>,"probes":<n>,"airtags":<n>}` — poll-friendly device state. |
+| `jsonstatus` | `@J {"t":"status","mode":<n>,"running":<bool>,"free":<heap>,"aps":<n>,"stas":<n>,"ssids":<n>,"ips":<n>,"probes":<n>,"airtags":<n>,"rid":<n>[,"csi":<bool>]}` — poll-friendly device state. `rid` = Remote ID record count (proto ≥ 3); `csi` present only when the board has CSI motion. |
 | `jsonlist a` | per access point: `@J {"t":"ap","i":..,"ch":..,"rssi":..,"sel":..,"pkts":..,"sec":..,"wps":..,"nsta":..,"bssid":"..","essid":".."}` |
 | `jsonlist s` | per SSID: `@J {"t":"ssid","i":..,"ch":..,"sel":..,"essid":".."}` |
 | `jsonlist c` | per station (client): `@J {"t":"sta","ap":..,"i":..,"sel":..,"pkts":..,"mac":".."}` |
 | `jsonlist i` | per IP: `@J {"t":"ip","i":..,"ip":".."}` |
 | `jsonlist p` | per probe request: `@J {"t":"probe","i":..,"req":..,"sel":..,"essid":".."}` |
 | `jsonlist t` | per AirTag: `@J {"t":"airtag","i":..,"rssi":..,"sel":..,"mac":".."}` |
+| `jsonlist d` | **proto ≥ 3** — per Remote ID (drone): `@J {"t":"rid","i":..,"mac":"..","uas":"..","op":"..","lat":<e7>,"lon":<e7>,"alt":<m>,"spd":<m/s>,"dir":<deg>,"rssi":..,"ua":<uaType>,"pkts":..,"loc":<bool>}`. `lat`/`lon` are 1e-7-degree integers (divide by 1e7); `loc` says whether the location fields are valid. |
+| `jsonlist g` | **proto ≥ 3** — per geofence: `@J {"t":"fence","i":<1-5>,"en":<bool>,"lat":<deg>,"lon":<deg>,"r":<miles>,"name":".."}` (persisted config, not a live scan). |
 | `jsonlist <x>` (unknown) | `@J {"t":"err","cmd":"jsonlist","arg":"x"}` |
-| *(end of any list)* | `@J {"t":"end","list":"<a\|s\|c\|i\|p\|t>","n":<rows-actually-sent>}` |
+| *(end of any list)* | `@J {"t":"end","list":"<a\|s\|c\|i\|p\|t\|d\|g>","n":<rows-actually-sent>}` |
 | `jsonmode 1` / `jsonmode 0` | `@J {"t":"jsonmode","on":<bool>}` — toggles JSON mode (streaming) without a full handshake. Accepts `1`/`on`/`true`. |
 | `jsonbaud <rate>` | `@J {"t":"baud","rate":<n>}` — **proto ≥ 2.** Raise (or lower) the serial line rate so a host can drain captured pcap faster than the 115200 default. See §5. |
 
@@ -108,6 +111,18 @@ Streamed lines (only while JSON mode is on):
 
 Typical host flow: connect → `jsoninfo` (enables JSON mode) → `analyzer -t wifi`
 → consume `@J asample` / `@J chan` → `stopscan`.
+
+### Fox Hunt & CSI motion streams (proto ≥ 3)
+
+Both are gated by JSON mode (like the analyzer) and emitted at the rate the
+on-device feature already updates, so a host drives a live screen without polling.
+
+| Line | Meaning |
+|------|---------|
+| `@J {"t":"fox","name":"..","rssi":<dBm>,"ch":<n>,"bt":<bool>}` | one Fox Hunt signal-strength sample for the current target, on every RSSI update (WiFi `foxhunt`/`sigmon` or BLE). `bt` = the target is a Bluetooth device. |
+| `@J {"t":"csi","state":"..","motion":<0-100>,"rel":<0-100>,"rate":<samples/s>,"cal":<0-100>,"ch":<n>,"ap":".."}` | one CSI-motion status sample (~1 Hz) mirroring the human `CSI motion \| …` line. `state` is the detector state, `cal` the calibration percentage. |
+
+Host flow: `jsoninfo` → `foxhunt -w <ap>` (consume `@J fox`) or `csimotion start <AP index>` (consume `@J csi`) → `stopscan`.
 
 ---
 
@@ -232,8 +247,10 @@ Related commands: `evilportal -c sethtml <file>` (SD file, unchanged),
 ### Modified (additive only)
 | File | Change |
 |------|--------|
-| `configs.h` | `#define MARAUDER_JSON_PROTO 2` |
-| `JsonSerial.cpp` / `JsonSerial.h` | proto ≥ 2: `jsonbaud` command + `"t":"baud"` reply; `"capstream"` advertised in `jsoninfo` caps |
+| `configs.h` | `#define MARAUDER_JSON_PROTO 3` |
+| `JsonSerial.cpp` / `JsonSerial.h` | proto ≥ 2: `jsonbaud` command + `"t":"baud"` reply; `"capstream"` advertised in `jsoninfo` caps. proto ≥ 3: `jsonlist d`/`g` (Remote ID / geofences), `rid`/`csi` status counters, `remoteid`/`foxhunt`/`recon`/`csi`/`geofence` caps, and `emitFoxHunt()` / `emitCsi()` streams |
+| `WiFiScan.cpp` / `WiFiScan.h` | proto ≥ 3: `remoteIdCount()` / `remoteIdAt()` accessors for `jsonlist d`; `emitFoxHunt()` from the Fox Hunt RSSI-update path |
+| `CsiMotionMonitor.cpp` | proto ≥ 3: `emitCsi()` alongside the human CSI-motion status line |
 | `Buffer.cpp` / `Buffer.h` | proto ≥ 2: `saveSerial()` emits the length-prefixed binary frame (`SYNC`/`seq`/`type`/`len`/`payload`/`crc32`); a `dropped` counter + `{"t":"drop"}` reporting; `seq_no` and `stream_type` framing state. Replaces the old `[BUF/BEGIN]…[BUF/CLOSE]` text markers. |
 | `CommandLine.cpp` | `#include "JsonSerial.h"`; dispatch JSON commands at the top of `runCommand`; add the `analyzer` command; suppress the interactive `> ` prompt while JSON mode is on |
 | `CommandLine.h` | `analyzer` command token + help string |

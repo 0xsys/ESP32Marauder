@@ -903,6 +903,12 @@ class WiFiScan
 
     FoxHuntTarget fox_hunt_target;
 
+    // Snapshot access to detected Remote ID (drone) records for the JSON serial
+    // 'd' list. Reads one record at a time under the Remote ID lock so the
+    // machine-readable list stays consistent with the on-device BLE/beacon writer.
+    size_t remoteIdCount();
+    bool remoteIdAt(size_t index, RemoteIdRecord& out);
+
     volatile bool bt_cb_busy = false;
     volatile bool bt_pending_clear = false;
 

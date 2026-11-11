@@ -2,7 +2,13 @@
 
 #include "WiFiScan.h"
 #include "EvilPortal.h"
+#include "settings.h"
 #include "utils.h"
+#if defined(HAS_CSI_MOTION)
+  #include "CsiMotionMonitor.h"
+#endif
+
+extern Settings settings_obj;
 
 // Globals defined in WiFiScan.cpp / esp32_marauder.ino (mirrors CommandLine.h)
 extern LinkedList<AccessPoint>* access_points;
@@ -131,6 +137,17 @@ static void printInfo() {
   #ifdef HAS_SCREEN
     Serial.print(F(",\"screen\""));
   #endif
+  // proto >= 3 features. A host feature-detects each capability instead of
+  // assuming it from the firmware version.
+  Serial.print(F(",\"remoteid\""));   // jsonlist d (drone Remote ID) + target tracking
+  Serial.print(F(",\"foxhunt\""));    // {"t":"fox"} live signal-strength stream
+  Serial.print(F(",\"recon\""));      // recon mission (results land in the a/c lists)
+  #ifdef HAS_CSI_MOTION
+    Serial.print(F(",\"csi\""));      // {"t":"csi"} motion stream
+  #endif
+  #ifdef HAS_GPS
+    Serial.print(F(",\"geofence\"")); // jsonlist g (configured geofences)
+  #endif
 
   Serial.println(F("]}"));
 }
@@ -156,6 +173,11 @@ static void printStatus() {
   Serial.print(probe_req_ssids ? probe_req_ssids->size() : 0);
   Serial.print(F(",\"airtags\":"));
   Serial.print(airtags ? airtags->size() : 0);
+  Serial.print(F(",\"rid\":"));
+  Serial.print(wifi_scan_obj.remoteIdCount());
+  #ifdef HAS_CSI_MOTION
+    Serial.print(F(",")); boolField(F("\"csi\":"), csi_motion_obj.active(), false);
+  #endif
   Serial.println(F("}"));
 }
 
@@ -259,6 +281,55 @@ static int listAirtags() {
   return n;
 }
 
+// jsonlist d - detected Remote ID (drone) records. Coordinates are emitted as
+// the raw 1e-7 degree integers the ASTM/Open Drone ID payload carries, so the
+// host divides by 1e7 (no lossy on-device float formatting). alt/speed are
+// metres / m-per-second; "loc" says whether the location fields are valid.
+static int listRemoteId() {
+  size_t n = wifi_scan_obj.remoteIdCount();
+  RemoteIdRecord r;
+  int emitted = 0;
+  for (size_t i = 0; i < n; i++) {
+    if (!wifi_scan_obj.remoteIdAt(i, r)) continue;
+    Serial.print(F(JSON_LINE_PREFIX "{\"t\":\"rid\",\"i\":"));
+    Serial.print((int)i);
+    Serial.print(F(",\"mac\":\"")); Serial.print(macToString(r.mac));
+    Serial.print(F("\",\"uas\":\"")); Serial.print(jsonEscape(String(r.uasId)));
+    Serial.print(F("\",\"op\":\"")); Serial.print(jsonEscape(String(r.operatorId)));
+    Serial.print(F("\",\"lat\":")); Serial.print(r.latitudeE7);
+    Serial.print(F(",\"lon\":")); Serial.print(r.longitudeE7);
+    Serial.print(F(",\"alt\":")); Serial.print(r.altitudeGeoM, 1);
+    Serial.print(F(",\"spd\":")); Serial.print(r.horizontalSpeedMps, 1);
+    Serial.print(F(",\"dir\":")); Serial.print(r.directionDeg);
+    Serial.print(F(",\"rssi\":")); Serial.print(r.rssi);
+    Serial.print(F(",\"ua\":")); Serial.print(r.uaType);
+    Serial.print(F(",\"pkts\":")); Serial.print(r.packetCount);
+    Serial.print(F(",")); boolField(F("\"loc\":"), r.hasLocation, false);
+    Serial.println(F("}"));
+    emitted++;
+  }
+  return emitted;
+}
+
+// jsonlist g - the configured geofences (persisted in settings, not a live scan).
+static int listGeofences() {
+  int emitted = 0;
+  for (uint8_t i = 0; i < MAX_GEOFENCES; i++) {
+    GeofenceConfig fence;
+    if (!settings_obj.loadGeofence(i, fence)) continue;
+    Serial.print(F(JSON_LINE_PREFIX "{\"t\":\"fence\",\"i\":"));
+    Serial.print(i + 1);
+    Serial.print(F(",")); boolField(F("\"en\":"), fence.enabled);
+    Serial.print(F("\"lat\":")); Serial.print(fence.latitude, 6);
+    Serial.print(F(",\"lon\":")); Serial.print(fence.longitude, 6);
+    Serial.print(F(",\"r\":")); Serial.print(fence.radiusMiles, 2);
+    Serial.print(F(",\"name\":\"")); Serial.print(jsonEscape(fence.name));
+    Serial.println(F("\"}"));
+    emitted++;
+  }
+  return emitted;
+}
+
 static void printList(char which) {
   int count;
   switch (which) {
@@ -268,6 +339,8 @@ static void printList(char which) {
     case 'i': count = listIps();      break;
     case 'p': count = listProbes();   break;
     case 't': count = listAirtags();  break;
+    case 'd': count = listRemoteId(); break;
+    case 'g': count = listGeofences(); break;
     default:
       // Unknown list type: report an explicit error instead of silently
       // returning the AP list under the wrong label.
@@ -380,5 +453,37 @@ void JsonSerial::emitCred(const String& user, const String& pass) {
   Serial.print(jsonEscape(user));
   Serial.print(F("\",\"p\":\""));
   Serial.print(jsonEscape(pass));
+  Serial.println(F("\"}"));
+}
+
+void JsonSerial::emitFoxHunt(const String& name, int rssi, int channel, bool bt) {
+  if (!g_jsonMode) return;
+  Serial.print(F(JSON_LINE_PREFIX "{\"t\":\"fox\",\"name\":\""));
+  Serial.print(jsonEscape(name));
+  Serial.print(F("\",\"rssi\":"));
+  Serial.print(rssi);
+  Serial.print(F(",\"ch\":"));
+  Serial.print(channel);
+  Serial.print(F(",")); boolField(F("\"bt\":"), bt, false);
+  Serial.println(F("}"));
+}
+
+void JsonSerial::emitCsi(const char* state, int motion, int reliability, int rate,
+                         int calibration, const String& target, int channel) {
+  if (!g_jsonMode) return;
+  Serial.print(F(JSON_LINE_PREFIX "{\"t\":\"csi\",\"state\":\""));
+  Serial.print(state ? state : "");
+  Serial.print(F("\",\"motion\":"));
+  Serial.print(motion);
+  Serial.print(F(",\"rel\":"));
+  Serial.print(reliability);
+  Serial.print(F(",\"rate\":"));
+  Serial.print(rate);
+  Serial.print(F(",\"cal\":"));
+  Serial.print(calibration);
+  Serial.print(F(",\"ch\":"));
+  Serial.print(channel);
+  Serial.print(F(",\"ap\":\""));
+  Serial.print(jsonEscape(target));
   Serial.println(F("\"}"));
 }

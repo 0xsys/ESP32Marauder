@@ -72,7 +72,9 @@
   // when the machine-readable serial protocol changes.
   //   1 -> initial JSON command set (jsoninfo/jsonstatus/jsonlist/jsonmode + analyzers)
   //   2 -> length-prefixed binary capture streaming ("capstream"), jsonbaud, {"t":"drop"}
-  #define MARAUDER_JSON_PROTO 2
+  //   3 -> v1.20.0 features: jsonlist d (Remote ID) + g (geofences), foxhunt /
+  //        csi streaming ({"t":"fox"} / {"t":"csi"}), extra jsonstatus counters
+  #define MARAUDER_JSON_PROTO 3
 
   // NimBLE TX power for BLE spam/advertising, in dBm. +9 dBm (ESP_PWR_LVL_P9) is
   // the maximum the classic ESP32 radio supports; asking for more (the old

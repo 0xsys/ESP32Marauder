@@ -12483,6 +12483,22 @@ void WiFiScan::setFoxHuntTarget(const uint8_t mac[6], const String& name, int8_t
     this->set_channel = channel;
 }
 
+size_t WiFiScan::remoteIdCount() {
+  portENTER_CRITICAL(&this->remote_id_mux);
+  size_t n = this->remote_id_store.size();
+  portEXIT_CRITICAL(&this->remote_id_mux);
+  return n;
+}
+
+bool WiFiScan::remoteIdAt(size_t index, RemoteIdRecord& out) {
+  bool ok = false;
+  portENTER_CRITICAL(&this->remote_id_mux);
+  const RemoteIdRecord* record = this->remote_id_store.at(index);
+  if (record) { out = *record; ok = true; }
+  portEXIT_CRITICAL(&this->remote_id_mux);
+  return ok;
+}
+
 bool WiFiScan::updateFoxHuntRssi(const uint8_t mac[6], int8_t rssi, uint8_t channel) {
   if (!this->fox_hunt_target.active)
     return false;
@@ -12494,6 +12510,9 @@ bool WiFiScan::updateFoxHuntRssi(const uint8_t mac[6], int8_t rssi, uint8_t chan
   this->fox_hunt_target.last_seen_ms = millis();
   if (marauder::foxHuntShouldUpdateChannel(this->fox_hunt_target.bluetooth, channel))
     this->fox_hunt_target.channel = channel;
+  // Stream the live signal strength to a JSON host (gated by jsonMode).
+  JsonSerial::emitFoxHunt(this->fox_hunt_target.name, this->fox_hunt_target.rssi,
+                          this->fox_hunt_target.channel, this->fox_hunt_target.bluetooth);
   return true;
 }
 
@@ -12512,6 +12531,8 @@ bool WiFiScan::updateBluetoothFoxHuntRssi(const uint8_t mac[6], const String& ad
 
   this->fox_hunt_target.rssi = rssi;
   this->fox_hunt_target.last_seen_ms = millis();
+  JsonSerial::emitFoxHunt(this->fox_hunt_target.name, this->fox_hunt_target.rssi,
+                          this->fox_hunt_target.channel, this->fox_hunt_target.bluetooth);
   return true;
 }
 

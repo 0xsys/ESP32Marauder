@@ -71,6 +71,17 @@ namespace JsonSerial {
   //   plain serial monitor still sees only the human-readable "u: .. p: .." line.
   //   Both fields are JSON/UTF-8 escaped, so arbitrary form input stays valid JSON.
   void emitCred(const String& user, const String& pass);
+
+  // emitFoxHunt: one live signal-strength sample for the current Fox Hunt target
+  //   as @J {"t":"fox","name":..,"rssi":..,"ch":..,"bt":bool}. Called from the
+  //   Fox Hunt RSSI-update path (WiFi + BLE); gated by jsonModeEnabled().
+  void emitFoxHunt(const String& name, int rssi, int channel, bool bt);
+
+  // emitCsi: one CSI-motion status sample as @J {"t":"csi",...}. Mirrors the
+  //   human-readable "CSI motion | ..." line the monitor already prints (~1 Hz);
+  //   gated by jsonModeEnabled().
+  void emitCsi(const char* state, int motion, int reliability, int rate,
+               int calibration, const String& target, int channel);
 }
 
 #endif
